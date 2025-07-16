@@ -1,4 +1,50 @@
+# Archivos y directorios generados automáticamente o sensibles
 
+# Directorios de resultados de AGHA
+results/
 
-#Ignore vscode AI rules
-.github/copilot-instructions.md
+# Entornos virtuales de Python
+virtualenv/
+v_env/
+v_env_*
+venv/
+.venv/
+
+# Archivos de caché de Python
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Archivos de log
+*.log
+
+# Archivos de configuración sensibles (ej. variables de entorno)
+.env
+.flaskenv
+config.ini
+credentials.json
+
+# Archivos de IDEs y editores
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Archivos de sistema operativo
+.DS_Store
+Thumbs.db
+
+# Binarios y ejecutables
+*.exe
+*.dll
+*.so
+*.o
+*.bin
+
+# Archivos de bases de datos locales
+*.sqlite3
+*.db
+
+# Archivos de caché de Go (si aplica)
+.cache/
