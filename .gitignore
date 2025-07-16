@@ -48,3 +48,6 @@ Thumbs.db
 
 # Archivos de caché de Go (si aplica)
 .cache/
+
+# Archivos específicos del agente Gemini
+GEMINI.md
