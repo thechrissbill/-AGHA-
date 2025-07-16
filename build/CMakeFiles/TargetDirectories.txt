@@ -1,0 +1,5 @@
+/home/bill/AGHA/build/CMakeFiles/nuclei_scanner.dir
+/home/bill/AGHA/build/CMakeFiles/edit_cache.dir
+/home/bill/AGHA/build/CMakeFiles/rebuild_cache.dir
+/home/bill/AGHA/build/_deps/json-build/CMakeFiles/edit_cache.dir
+/home/bill/AGHA/build/_deps/json-build/CMakeFiles/rebuild_cache.dir

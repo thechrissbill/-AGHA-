@@ -1,0 +1,9 @@
+Reporte de Escaneo Nuclei
+========================
+
+Resumen:
+--------
+
+Detalles de los hallazgos:
+------------------------
+
