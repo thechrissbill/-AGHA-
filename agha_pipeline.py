@@ -1,5 +1,3 @@
-
-
 import os
 import json
 import subprocess
@@ -8,12 +6,27 @@ import argparse
 import shutil
 from queue import Queue
 from multiprocessing import Pool, cpu_count
+import ctypes
 
 # --- CONFIGURACIÓN ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GRAYHUNTER_NUCLEI_PATH = os.path.join(SCRIPT_DIR, "scripts", "grayhunter-nuclei")
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 TARGETS_FILE = os.path.join(SCRIPT_DIR, "targets.txt")
+CPP_LIB_PATH = os.path.join(SCRIPT_DIR, "cpp_core", "libhighperf.so")
+
+# Cargar la biblioteca C++
+try:
+    cpp_lib = ctypes.CDLL(CPP_LIB_PATH)
+    # Definir la interfaz de las funciones C
+    cpp_lib.create_high_performance_system.restype = ctypes.c_void_p
+    cpp_lib.process_scan_result.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+    cpp_lib.print_system_status.argtypes = [ctypes.c_void_p]
+    cpp_lib.destroy_high_performance_system.argtypes = [ctypes.c_void_p]
+    print(f"[*] Biblioteca C++ cargada exitosamente desde: {CPP_LIB_PATH}")
+except OSError as e:
+    print(f"[-] Error al cargar la biblioteca C++: {e}. Asegúrate de que {CPP_LIB_PATH} existe y es accesible.")
+    cpp_lib = None # Marcar como no disponible
 
 # 1. DEFINICIÓN DEL PIPELINE BASE
 # Una secuencia de escaneos que se ejecutan en orden.
@@ -65,11 +78,11 @@ def run_grayhunter_nuclei_command(target, command_args, session_output_dir):
     ]
     command.extend(command_args)
 
-    print(f"    [*] Ejecutando GrayHunter Nuclei para {target}: {' '.join(command)}")
+    # print(f"    [*] Ejecutando GrayHunter Nuclei para {target}: {' '.join(command)}") # Descomentar para depuración
     try:
         # Capturamos la salida para ver el progreso, pero grayhunter-nuclei ya escribe a archivos.
         process = subprocess.run(command, capture_output=True, text=True, check=True)
-        print(f"    [+] GrayHunter Nuclei completado para {target}.")
+        # print(f"    [+] GrayHunter Nuclei completado para {target}.") # Descomentar para depuración
         # print(process.stdout) # Descomentar para ver la salida completa de grayhunter-nuclei
         # print(process.stderr) # Descomentar para ver errores de grayhunter-nuclei
         return True
@@ -80,19 +93,30 @@ def run_grayhunter_nuclei_command(target, command_args, session_output_dir):
         print(f"[-] Error Fatal: El ejecutable 'grayhunter-nuclei' no se encontró en la ruta: {GRAYHUNTER_NUCLEI_PATH}")
         return False
 
-def parse_results_for_triggers(jsonl_file_path):
-    """Parsea un archivo de resultados JSONL y devuelve un set de tags encontrados."""
+def parse_results_for_triggers(json_file_path, cpp_system_ptr):
+    """Parsea un archivo de resultados JSON y devuelve un set de tags encontrados.
+       También envía cada hallazgo al sistema C++ para procesamiento optimizado."""
     detected_tags = set()
-    if not os.path.exists(jsonl_file_path):
+    if not os.path.exists(json_file_path):
         return detected_tags
 
-    with open(jsonl_file_path, 'r') as f:
-        for line in f:
+    with open(json_file_path, 'r') as f:
+        for line_num, line in enumerate(f):
             try:
                 result = json.loads(line)
                 tags = result.get('info', {}).get('tags', [])
                 for tag in tags:
                     detected_tags.add(tag)
+                
+                # Enviar el hallazgo al sistema C++
+                if cpp_lib and cpp_system_ptr:
+                    request_id = f"{result.get('template-id', 'unknown')}_{result.get('matched-at', '')}_{line_num}"
+                    cpp_lib.process_scan_result(
+                        cpp_system_ptr,
+                        request_id.encode('utf-8'),
+                        line.encode('utf-8') # Enviar la línea JSON completa
+                    )
+
             except json.JSONDecodeError:
                 continue
     return detected_tags
@@ -117,20 +141,19 @@ def run_pipeline_for_target(target):
     # para poder pasarlas al report_generator.
     actual_session_dirs = []
 
+    # Crear instancia del sistema C++ para este proceso (si la lib está disponible)
+    cpp_system_instance = None
+    if cpp_lib:
+        cpp_system_instance = cpp_lib.create_high_performance_system()
+        print(f"[*] Instancia del sistema C++ creada para {target}.")
+
     # Fase 1: Pipeline Base
     print("\n--- [FASE 1: EJECUTANDO PIPELINE BASE] ---")
     for step in BASE_PIPELINE:
-        # grayhunter-nuclei creará un subdirectorio dentro de session_base_dir
-        # con un timestamp. Necesitamos capturar ese nombre.
-        # Por simplicidad, le pasaremos el session_base_dir y esperaremos que
-        # grayhunter-nuclei cree su directorio de sesión dentro.
-        
         # Ejecutamos grayhunter-nuclei. Él se encarga de crear su directorio de sesión
         # y poner los resultados allí.
         if run_grayhunter_nuclei_command(target, step['args'], session_base_dir):
             # Necesitamos encontrar el directorio de sesión real que grayhunter-nuclei creó.
-            # Esto es un poco hacky, pero grayhunter-nuclei usa el formato <sanitized_target>_<timestamp>
-            # dentro del output_dir que le pasamos.
             # Buscamos el directorio más reciente dentro de session_base_dir que empiece con sanitized_target
             
             # Primero, asegurarnos de que el directorio base exista
@@ -139,18 +162,11 @@ def run_pipeline_for_target(target):
                 continue
 
             # Encontrar el directorio de sesión real creado por grayhunter-nuclei
-            # Listamos los contenidos y buscamos el que coincida con el patrón de nombre
             found_session_dir = None
-            for d_name in os.listdir(session_base_dir):
-                if d_name.startswith(sanitized_target):
-                    full_path = os.path.join(session_base_dir, d_name)
-                    if os.path.isdir(full_path):
-                        # Asumimos que el más reciente es el que acabamos de crear
-                        # Esto podría ser problemático si se ejecutan múltiples escaneos muy rápido
-                        # Una solución más robusta sería que grayhunter-nuclei devolviera la ruta
-                        # de su directorio de sesión en stdout/stderr.
-                        found_session_dir = full_path
-                        break # Asumimos que el primero que encontramos es el correcto
+            # Listar directorios y ordenar por fecha de modificación para encontrar el más reciente
+            subdirs = [os.path.join(session_base_dir, d) for d in os.listdir(session_base_dir) if os.path.isdir(os.path.join(session_base_dir, d)) and d.startswith(sanitized_target)]
+            if subdirs:
+                found_session_dir = max(subdirs, key=os.path.getmtime)
             
             if not found_session_dir:
                 print(f"[-] Error: No se encontró el directorio de sesión de GrayHunter Nuclei dentro de {session_base_dir}.")
@@ -160,8 +176,9 @@ def run_pipeline_for_target(target):
             json_output_path = os.path.join(found_session_dir, step['output_json'])
 
             # 3. Análisis y Reacción
+            # Pasamos el puntero al sistema C++ a la función de parseo
             print(f"    [*] Analizando resultados de '{step['name']}' para triggers en {json_output_path}...")
-            found_tags = parse_results_for_triggers(json_output_path)
+            found_tags = parse_results_for_triggers(json_output_path, cpp_system_instance)
             for tag in found_tags:
                 if tag in VULN_REACTIVE_ACTIONS and tag not in processed_reactive_actions:
                     action = VULN_REACTIVE_ACTIONS[tag]
@@ -177,19 +194,15 @@ def run_pipeline_for_target(target):
         while not reactive_queue.empty():
             action, base_session_dir_for_reactive = reactive_queue.get()
             print(f"\n  -> Ejecutando acción reactiva: {action['name']}")
-            # Para las tareas reactivas, grayhunter-nuclei creará un nuevo subdirectorio
-            # dentro del directorio de sesión base del paso que disparó el trigger.
-            # Le pasamos el directorio base de la sesión original.
+            
             if run_grayhunter_nuclei_command(target, action['args'], base_session_dir_for_reactive):
                 # Necesitamos encontrar el directorio de sesión real creado por grayhunter-nuclei
                 # para esta tarea reactiva.
                 found_reactive_session_dir = None
-                for d_name in os.listdir(base_session_dir_for_reactive):
-                    if d_name.startswith(sanitized_target) and d_name != os.path.basename(base_session_dir_for_reactive):
-                        full_path = os.path.join(base_session_dir_for_reactive, d_name)
-                        if os.path.isdir(full_path):
-                            found_reactive_session_dir = full_path
-                            break
+                subdirs = [os.path.join(base_session_dir_for_reactive, d) for d in os.listdir(base_session_dir_for_reactive) if os.path.isdir(os.path.join(base_session_dir_for_reactive, d)) and d.startswith(sanitized_target)]
+                if subdirs:
+                    found_reactive_session_dir = max(subdirs, key=os.path.getmtime)
+
                 if found_reactive_session_dir:
                     actual_session_dirs.append(found_reactive_session_dir)
                 else:
@@ -198,8 +211,14 @@ def run_pipeline_for_target(target):
     print("\n--- [PIPELINE COMPLETADO] ---")
     print(f"[*] Todas las fases han finalizado para el objetivo: {target}")
     print(f"[*] Los directorios de sesión generados por GrayHunter Nuclei son: {actual_session_dirs}")
-    print(f"[*] Para generar un informe consolidado, ejecuta: python3 report_generator.py <ruta_al_workspace_principal>")
     
+    # Imprimir métricas del sistema C++
+    if cpp_lib and cpp_system_instance:
+        print(f"\n[*] Métricas de rendimiento del sistema C++ para {target}:")
+        cpp_lib.print_system_status(cpp_system_instance)
+        cpp_lib.destroy_high_performance_system(cpp_system_instance)
+        print(f"[*] Instancia del sistema C++ destruida para {target}.")
+
     # Devolvemos el directorio base que contiene todos los subdirectorios de sesión
     return session_base_dir
 
@@ -226,11 +245,6 @@ if __name__ == "__main__":
     start_time = datetime.datetime.now()
 
     # Crear y ejecutar el pool de procesos
-    # Pasamos el RESULTS_DIR a cada proceso para que grayhunter-nuclei sepa dónde crear sus directorios de sesión
-    # y para que el report_generator pueda encontrarlos.
-    
-    # Modificamos run_pipeline_for_target para que devuelva el directorio base de la sesión
-    # que contiene todos los subdirectorios de grayhunter-nuclei.
     with Pool(processes=args.concurrency) as pool:
         # pool.map devuelve una lista de los valores de retorno de run_pipeline_for_target
         base_workspaces = pool.map(run_pipeline_for_target, targets)
