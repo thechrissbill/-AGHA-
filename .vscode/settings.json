@@ -1,0 +1,5 @@
+{
+    "cmake.sourceDirectory": "${workspaceFolder}/AGHA",
+    "cmake.buildDirectory": "${workspaceFolder}/AGHA/build",
+    "cmake.generator": "Unix Makefiles"
+}

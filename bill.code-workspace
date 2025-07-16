@@ -1,0 +1,24 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"github.copilot.enable": {
+			"*": true,
+			"plaintext": true,
+			"markdown": true,
+			"yaml": true
+		},
+		"github.copilot.advanced": {
+			"maxTokens": 8192,
+			"temperature": 0.7,
+			"topP": 1,
+			"length": 500,
+			"inlineSuggestCount": 3,
+			"debugOverrideEngine": "claude-3-sonnet"
+		},
+		"editor.allowVariableFontsInAccessibilityMode": true
+	}
+}
